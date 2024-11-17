@@ -1,333 +1,209 @@
- #! /usr/bin/env python3
+# MIT License
+# 
+# Copyright (c) 2017 Derek Selander
 
- #  ______ ______ ______ ______ ______ ______ ______ ______ ______ ______ ______ ______ ______ ______ ______ ______ ______ 
- # |______|______|______|______|______|______|______|______|______|______|______|______|______|______|______|______|______| 
- #        _        ___  _      _      _____  ____   
- #       (_)      / _ \| |    | |    |  __ \|  _ \  
- #  __  ___  __ _| | | | |    | |    | |  | | |_) | 
- #  \ \/ / |/ _` | | | | |    | |    | |  | |  _ <  
- #   >  <| | (_| | |_| | |____| |____| |__| | |_) | 
- #  /_/\_\_|\__,_|\___/|______|______|_____/|____/                                                                                                                   
- #  ______ ______ ______ ______ ______ ______ ______ ______ ______ ______ ______ ______ ______ ______ ______ ______ ______ 
- # |______|______|______|______|______|______|______|______|______|______|______|______|______|______|______|______|______|
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
 
 import lldb
 import os
-import shlex
-import optparse
-import json
-import colorme
 import utils
-
-BLOCK_JSON_FILE = None
+import shlex
+import ds
+import optparse
 
 def __lldb_init_module(debugger, internal_dict):
     debugger.HandleCommand(
     'command script add -f sbt.handle_command sbt -h "Resymbolicate stripped ObjC backtrace"')
-    # print('========')
-    # print('[sbt]: Resymbolicate stripped ObjC backtrace')
-    # print('\txbr [-f BlockSymbolFile]')
-    # print('\tmore usage, try "sbt -h"')
 
-                    
 def handle_command(debugger, command, exe_ctx, result, internal_dict):
-    global BLOCK_JSON_FILE
-    
     '''
     Symbolicate backtrace. Will symbolicate a stripped backtrace
     from an executable if the backtrace is using Objective-C 
-    code. Currently doesn't support block symbolicating :)
+    code. Currently doesn't work on aarch64 stripped executables
+    but works great on x64 :]
     '''
     command_args = shlex.split(command, posix=False)
     parser = generate_option_parser()
-    
     try:
-        (options, _) = parser.parse_args(command_args)
+        (options, args) = parser.parse_args(command_args)
     except:
         result.SetError(parser.usage)
         return
 
-    if options.verbose:
-        BLOCK_JSON_FILE = None
-
-        
-    result.AppendMessage('  ==========================================xia0LLDB===========================================')
-    if options.file:
-        BLOCK_JSON_FILE = str(options.file)
-        result.AppendMessage('  BlockSymbolFile    {}'.format(colorme.attr_str(BLOCK_JSON_FILE, 'redd')))
-    else:
-        if BLOCK_JSON_FILE:
-            result.AppendMessage('  BlockSymbolFile    {}'.format(colorme.attr_str(BLOCK_JSON_FILE, 'redd')))
-            pass
-        else:
-            result.AppendMessage('  BlockSymbolFile    {}'.format(colorme.attr_str('Not Set The Block Symbol Json File, Try \'sbt -f\'', 'redd')))
-            pass
-    result.AppendMessage('  =============================================================================================')
 
     target = exe_ctx.target
     thread = exe_ctx.thread
+    if thread is None:
+        result.SetError('LLDB must be paused to execute this command')
+        return
 
-    # if options.address:
-    #     address = [int(options.address, 16)]
-    #     firstFrameAddr = address[0]
-    # else:
-    #     frameAddresses = [f.addr.GetLoadAddress(target) for f in thread.frames]
-    #     firstFrameAddr = frameAddresses[0]
+    if options.address:
+        frameAddresses = [int(options.address, 16)]
+    else:
+        frameAddresses = [f.addr.GetLoadAddress(target) 
+                          for f 
+                          in thread.frames]
 
-    frameString = symbolish_stack_trace_frame(debugger,target,thread)
-    # return 2 screen
-    result.AppendMessage(str(frameString))
-    return 
+    frameString = processStackTraceStringFromAddresses(debugger, frameAddresses, target, options)
+    result.AppendMessage(frameString)
 
 
-def symbolish_stack_trace_frame(debugger,target, thread):
+def processStackTraceStringFromAddresses(debugger, frameAddresses, target, options=None):
     frame_string = ''
-    idx = 0
+    startAddresses = [target.ResolveLoadAddress(f).symbol.addr.GetLoadAddress(target) for f in frameAddresses]
+    script = generateExecutableMethodsScript(startAddresses)
 
-    for f in thread.frames:
-        function = f.GetFunction()
-        # mem address
-        load_addr = f.addr.GetLoadAddress(target)
+    # New content start 1
+    methods = target.EvaluateExpression(script, ds.genExpressionOptions())
+    print("WTF", methods)
+    charPointerType = target.FindFirstType("char").GetPointerType().GetArrayType(len(frameAddresses))
+    methods = methods.Cast(charPointerType)
+    methodsVal = lldb.value(methods)
+    #methodsVal = utils.exe_script(debugger, script)
+    print("WTFVal", methodsVal)
+    # New content end 1
 
-        if not function:
-            # file address
-            file_addr = f.addr.GetFileAddress()
-            # offset
-            start_addr = f.GetSymbol().GetStartAddress().GetFileAddress()
-            symbol_offset = file_addr - start_addr
-            modulePath = str(f.addr.module.file)
+    # Enumerate each of the SBFrames in address list
+    pointerType = target.FindFirstType("char").GetPointerType()
+    for index, frameAddr in enumerate(frameAddresses):
+        addr = target.ResolveLoadAddress(frameAddr)
+        symbol = addr.symbol
 
-            # is_main_module_from_address? findname : symbol name
-            if is_main_module_from_address(target,debugger,load_addr):
-                if idx + 2 == len(thread.frames):
-                    metholdName = 'main + ' + str(symbol_offset)
-                else:
-                    command_script = find_symbol_from_address_script(load_addr, modulePath)
-                    one = utils.exe_script(debugger,command_script)
-                    # is set the block file path
-                    if BLOCK_JSON_FILE and len(BLOCK_JSON_FILE) > 0:
-                        two = find_block_symbol_from_adress(file_addr)
-                        response = choose_best(one, two)
-                    else:
-                        response = one
-                    response = check_if_analysis_error(response)
-                    metholdName = str(response).replace("\n","")
-                frame_string += '  frame #{num}: [file:{f_addr} mem:{m_addr}] {mod}`{symbol}\n'.format(num=idx, f_addr=colorme.attr_str(str(hex(file_addr)), 'cyan'), m_addr=colorme.attr_str(hex(load_addr),'grey'),mod=colorme.attr_str(str(f.addr.module.file.basename), 'yellow'), symbol=colorme.attr_str(metholdName, 'green'))
-            else:
-                metholdName = f.addr.symbol.name
-                frame_string += '  frame #{num}: [file:{f_addr} mem:{m_addr}] {mod}`{symbol} + {offset} \n'.format(num=idx, f_addr=colorme.attr_str(str(hex(file_addr)), 'cyan'), m_addr=colorme.attr_str(hex(load_addr),'grey'),mod=colorme.attr_str(str(f.addr.module.file.basename), 'yellow'), symbol=metholdName, offset=symbol_offset)
+        # New content start 2
+        if symbol.synthetic: # 1
+            children = methodsVal.sbvalue.GetNumChildren() # 4
+            name = ds.attrStr(symbol.name + r' ... unresolved womp womp', 'redd') # 2
+
+            loadAddr = symbol.addr.GetLoadAddress(target) # 3
+            k = str(methodsVal[index]).split('"') # 5
+            if len(k) >= 2:
+                name = ds.attrStr(k[1], 'bold') # 6
         else:
-            frame_string += '  frame #{num}: {addr} {mod}`{func} at {file}\n'.format(
-                    num=idx, addr=hex(load_addr), mod=colorme.attr_str(str(f.addr.module.file.basename), 'yellow'),
-                    func='%s [inlined]' % function if f.IsInlined() else function,
-                    file=f.addr.symbol.name)
-        
-        idx = idx + 1
+            name = ds.attrStr(str(symbol.name), 'yellow') # 7
+        # New content end 2
+
+        offset_str = ''
+        offset = addr.GetLoadAddress(target) - addr.symbol.addr.GetLoadAddress(target)
+        if offset > 0:
+            offset_str = '+ {}'.format(offset)
+
+        i = ds.attrStr('frame #{:<2}:'.format(index), 'grey')
+        if options and options.address:
+            frame_string += '{} {}`{} {}\n'.format(ds.attrStr(hex(addr.GetLoadAddress(target)), 'grey'), ds.attrStr(str(addr.module.file.basename), 'cyan'), ds.attrStr(str(name), 'yellow'), ds.attrStr(offset_str, 'grey'))
+        else:
+            frame_string += '{} {} {}`{} {}\n'.format(i, ds.attrStr(str(hex(addr.GetLoadAddress(target))), 'grey'), ds.attrStr(str(addr.module.file.basename), 'cyan'), name, ds.attrStr(str(offset_str), 'grey'))
+
+
     return frame_string
 
-def choose_best(scriptRet, jsonFileRet):
-    one = scriptRet.replace(" ", "")
-    two = jsonFileRet.replace(" ", "")
+def generateOptions():
+    expr_options = lldb.SBExpressionOptions()
+    expr_options.SetUnwindOnError(True)
+    expr_options.SetLanguage (lldb.eLanguageTypeObjC_plus_plus)
+    expr_options.SetCoerceResultToId(False)
+    return expr_options
 
-    try:
-        # skip first methold type char "-/+" and turn distance to int
-        oneDis = int(one[1:].split('+')[1], 10)
-        twoDis = int(two[1:].split('+')[1], 10)
 
-    except Exception:
-        return '===[E]===:' + scriptRet
-
-    if oneDis < twoDis:
-        return scriptRet
-    else:
-        return jsonFileRet
-
-    return jsonFileRet
-
-def check_if_analysis_error(frameString):
-    maxDis = 2500
-    frameString_strip = frameString.replace(" ", "")
-    try:
-        # skip first methold type char "-/+" and turn distance to int
-        dis = int(frameString_strip[1:].split('+')[1], 10)
-    except Exception:
-        return '===[E]===:' + frameString
-    
-    if 'cxx_destruct' in frameString:
-        return "Maybe c function? Found [OC .cxx_destruct]  # Symbol:{}".format(frameString)
-        
-    if 'cxx_construct' in frameString:
-        return "Maybe c function? Found [OC .cxx_construct] # Symbol:{}".format(frameString)
-        
-    if dis >= maxDis:
-        return 'Maybe c function? Distance:{} >= {} # Symbol:{}'.format(dis, maxDis, frameString)
-    else:
-        return frameString
-    
-def find_block_symbol_from_adress(address):
-    try:
-        f = open(BLOCK_JSON_FILE, 'r')
-        symbolJsonArr = json.loads(f.read())
-        f.close()
-    except Exception:
-        return "ERROR in handle json file, check file path and content is correct:{}. + 0".format(BLOCK_JSON_FILE)
-
-    if type(address) is int:
-        pass
-    else:
-        address = int(address, 16)
-
-    theDis = 0xffffffffffffffff
-    theSymbol = ''
-    for block in symbolJsonArr:
-        blockAddr = int(block['address'], 16)
-        # curDis = address - blockAddr
-        if blockAddr <= address and (address - blockAddr) <= theDis:
-            theDis = address - blockAddr
-            theSymbol = block['name']
-    
-    result = theSymbol + ' + ' + str(theDis)
-    return result
-
-def is_main_module_from_address(target,debugger,address):
-    #  get moduleName of address
-    addr = target.ResolveLoadAddress(address)
-    moduleName = addr.module.file.basename
-    modulePath = str(addr.module.file)
-    #  get executable path
-    getExecutablePathScript = r''' 
-    const char *path = (char *)[[[NSBundle mainBundle] executablePath] UTF8String];
-    path
+def generateExecutableMethodsScript(frame_addresses):
+    xcode9bug = 'char *frames[' + str(len(frame_addresses)) + r'''];
+    for (int i = 0; i < ''' + str(len(frame_addresses)) + r'''; i++) {
+        frames[i] = NULL;
+    }
     '''
-    # is in executable path?
-    path = utils.exe_script(debugger, getExecutablePathScript)
-    appDir = os.path.dirname(path.strip()[1:-1])
+    frame_addr_str = 'NSArray *ar = @['
+    for f in frame_addresses:
+        frame_addr_str += '@"' + str(f) + '",'
 
+    frame_addr_str = frame_addr_str[:-1]
+    frame_addr_str += '];'
 
-    if not moduleName or not str(path):
-        return False
-
-    if appDir in modulePath:
-        return True
-
-    else:
-        return False
-
-    if moduleName in str(path):
-        return True
-    else:
-        return False
-
-def find_symbol_from_address_script(frame_addr, module_path):
-    command_script = 'uintptr_t frame_addr =' + str(frame_addr) + ';'
-    command_script += 'const char *path =\"' + str(module_path) + '\";'
+    command_script = r'''
+    NSLog(@" PXRT :sbt");
+    @import ObjectiveC;
+    @import Foundation;
+  NSMutableDictionary *retdict = [NSMutableDictionary dictionary];
+  retdict;
+  return;
+  unsigned int count = 0;
+  const char *path = (char *)[[[NSBundle mainBundle] executablePath] UTF8String];
+  const char **allClasses = (const char **)objc_copyClassNamesForImage(path, &count);
+  printf("PXRT: Hi\n");
+  
+  NSLog(@"PXRT: All classes: %s", *allClasses);
+  printf("PXRT: All classes: %s", *allClasses);
+  NSLog(@"PXRT:sbtend");
+  for (int i = 0; i < count; i++) {
+    Class cls = objc_getClass(allClasses[i]);
+    if (!(Class)class_getSuperclass(cls)) {
+      continue;
+    }
+    unsigned int methCount = 0;
+    Method *methods = class_copyMethodList(cls, &methCount);
+    for (int j = 0; j < methCount; j++) {
+      Method meth = methods[j];
+      id implementation = (id)method_getImplementation(meth);
+      NSString *methodName = [[[[@"-[" stringByAppendingString:NSStringFromClass(cls)] stringByAppendingString:@" "] stringByAppendingString:NSStringFromSelector(method_getName(meth))] stringByAppendingString:@"]"];
+      [retdict setObject:methodName forKey:(id)[@((uintptr_t)implementation) stringValue]];
+    }
+    
+    unsigned int classMethCount = 0;
+    
+    Method *classMethods = class_copyMethodList(objc_getMetaClass(class_getName(cls)), &classMethCount);
+    for (int j = 0; j < classMethCount; j++) {
+      Method meth = classMethods[j];
+      id implementation = (id)method_getImplementation(meth);
+      NSString *methodName = [[[[@"+[" stringByAppendingString:NSStringFromClass(cls)] stringByAppendingString:@" "] stringByAppendingString:NSStringFromSelector(method_getName(meth))] stringByAppendingString:@"]"];
+      [retdict setObject:methodName forKey:(id)[@((uintptr_t)implementation) stringValue]];
+    }
+    
+    free(methods);
+    free(classMethods);
+  }
+  free(allClasses);
+  '''
+    command_script += xcode9bug
+    command_script += frame_addr_str
     command_script += r'''
     
-    // NSMutableDictionary *retdict = [NSMutableDictionary dictionary];
-    // NSMutableArray *retArr = [NSMutableArray array];
 
-    unsigned int c_size = 0;
-    //const char *path = (char *)[[[NSBundle mainBundle] executablePath] UTF8String];
-    const char **allClasses = (const char **)objc_copyClassNamesForImage(path, &c_size);
-    
-    // NSString *c_size_str = [@(c_size) stringValue];
+  for (NSString *key in ar) {
+    if ((BOOL)[retdict containsKey:key]) {
+      NSInteger i = [ar indexOfObject:key];
 
-    uintptr_t tmpDis = 0;
-    uintptr_t theDistance = 0xffffffffffffffff;
-    uintptr_t theIMP = 0;
-    NSString* theMethodName = nil;
-    NSString* theClassName = nil;
-    NSString* theMetholdType = nil;
 
-    // go all class
-    for (int i = 0; i < c_size; i++) {
-        Class cls = objc_getClass(allClasses[i]);
-        tmpDis = 0;
-
-        // for methold of a class
-        unsigned int m_size = 0;
-        struct objc_method ** metholds = (struct objc_method **)class_copyMethodList(cls, &m_size);
-        // NSMutableDictionary *tmpdict = [NSMutableDictionary dictionary];
-
-        for (int j = 0; j < m_size; j++) {
-            struct objc_method * meth = metholds[j];
-            id implementation = (id)method_getImplementation(meth);
-            NSString* m_name = NSStringFromSelector((SEL)method_getName(meth));
-            // [tmpdict setObject:m_name forKey:(id)[@((uintptr_t)implementation) stringValue]];
-
-            if(frame_addr >= (uintptr_t)implementation){
-                if((frame_addr - (uintptr_t)implementation) <= theDistance){
-                    theDistance = frame_addr - (uintptr_t)implementation);
-                    theIMP = (uintptr_t)implementation;
-                    theMethodName = m_name;
-                    theClassName = (NSString*)NSStringFromClass(cls);
-                    theMetholdType = @"-";
-                }
-            }
-        }
-
-        // for class methold of a class
-        unsigned int cm_size = 0;
-        struct objc_method **classMethods = (struct objc_method **)class_copyMethodList((Class)objc_getMetaClass((const char *)class_getName(cls)), &cm_size);
-        for (int k = 0; k < cm_size; k++) {
-            struct objc_method * meth = classMethods[k];
-            id implementation = (id)method_getImplementation(meth);
-            NSString* cm_name = NSStringFromSelector((SEL)method_getName(meth));
-            // [tmpdict setObject:cm_name forKey:(id)[@((uintptr_t)implementation) stringValue]];
-
-            if(frame_addr >= (uintptr_t)implementation){
-                if((frame_addr - (uintptr_t)implementation) <= theDistance){
-                    theDistance = frame_addr - (uintptr_t)implementation);
-                    theIMP = (uintptr_t)implementation;
-                    theMethodName = cm_name;
-                    theClassName = (NSString*)NSStringFromClass(cls);
-                    theMetholdType = @"+";
-                }
-            }
-        }
-        free(metholds);
-        free(classMethods);
-        // [retdict setObject:tmpdict forKey:(NSString*)NSStringFromClass(cls)];
+      frames[i] = (char *)[[retdict objectForKey:key] UTF8String];
     }
-    free(allClasses);
+  }
 
-    NSMutableString* retStr = [NSMutableString string];
-    [retStr appendString:theMetholdType];
-    [retStr appendString:@"["];
-    [retStr appendString:theClassName];
-    [retStr appendString:@" "];
-    [retStr appendString:theMethodName];
-    [retStr appendString:@"]"];
-    // [retStr appendString:@" -> "];
-    // [retStr appendString:(id)[@((uintptr_t)theIMP) stringValue]];
-    [retStr appendString:@" + "];
-    NSNumber* theDistanceNum =  [NSNumber numberWithInt:theDistance];
-    [retStr appendString:(id)[theDistanceNum stringValue]];
-
-    retStr
-    '''
+  frames;
+  '''
     return command_script
 
 def generate_option_parser():
-    usage = "usage: sbt -f block-json-file-path"
+    usage = "usage: %prog [options] path/to/item"
     parser = optparse.OptionParser(usage=usage, prog="lookup")
 
-    # parser.add_option("-a", "--address",
-    #                   action="store",
-    #                   default=None,
-    #                   dest="address",
-    #                   help="Only try to resymbolicate this address")
+    parser.add_option("-a", "--address",
+                      action="store",
+                      default=None,
+                      dest="address",
+                      help="Only try to resymbolicate this address")
 
-    parser.add_option("-f", "--file",
-                    action="store",
-                    default=None,
-                    dest="file",
-                    help="special the block json file")
-
-    parser.add_option("-r", "--reset",
-                    action="store_true",
-                    default=None,
-                    dest='verbose',
-                    help="reset block file to None")
-
+    
     return parser

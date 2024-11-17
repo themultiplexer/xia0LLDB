@@ -126,8 +126,8 @@ def get_all_image_of_app(debugger=lldb.debugger, appDir=None):
     command_script += r'''
     NSMutableString* retStr = [NSMutableString string];
     
-    uint32_t count = (uint32_t)_dyld_image_count();
-    for(uint32_t i = 0; i < count; i++){
+    uint32_t count2 = (uint32_t)_dyld_image_count();
+    for(uint32_t i = 0; i < count2; i++){
         char* curModuleName_cstr = (char*)_dyld_get_image_name(i);
         long slide = (long)_dyld_get_image_vmaddr_slide(i);
         uintptr_t baseAddr = (uintptr_t)_dyld_get_image_header(i);

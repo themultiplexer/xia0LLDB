@@ -137,11 +137,11 @@ def choose(debugger, classname):
             size = writ;
         }
     }
-    // function void choose_(task_t task, void *baton, unsigned type, vm_range_t *ranges, unsigned count)
-    typedef void (*choose__t)(task_t task, void *baton, unsigned type, vm_range_t *ranges, unsigned count);
-    choose__t choose_ = [](task_t task, void *baton, unsigned type, vm_range_t *ranges, unsigned count) -> void {
+    // function void choose_(task_t task, void *baton, unsigned type, vm_range_t *ranges, unsigned count2)
+    typedef void (*choose__t)(task_t task, void *baton, unsigned type, vm_range_t *ranges, unsigned count2);
+    choose__t choose_ = [](task_t task, void *baton, unsigned type, vm_range_t *ranges, unsigned count2) -> void {
         XZChoice * choiz = (struct XZChoice *)(baton);
-        for (unsigned i = 0; i < count; ++i) {
+        for (unsigned i = 0; i < count2; ++i) {
             vm_range_t &range = ranges[i];
             void * data = (void *)(range.address);
             size_t size = range.size;

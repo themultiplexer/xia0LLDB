@@ -227,9 +227,9 @@ def dump_macho_to_file(debugger, machoIdx, machoPath, fix_addr=0):
     #define SEEK_CUR    1   /* set file offset to current plus offset */
     #define SEEK_SET    0
 
-    #define O_CREAT         0x0200          /* create if nonexistant */
-    #define O_TRUNC         0x0400          /* truncate to zero length */
-    #define O_EXCL          0x0800          /* error if already exists */
+    //#define O_CREAT         0x0200          /* create if nonexistant */
+    //#define O_TRUNC         0x0400          /* truncate to zero length */
+    //#define O_EXCL          0x0800          /* error if already exists */
 
     #define SEEK_END    2
     // #define errno (*__error())
@@ -293,10 +293,18 @@ def dump_macho_to_file(debugger, machoIdx, machoPath, fix_addr=0):
         uint32_t    size;       /* size of this object file */
         uint32_t    align;      /* alignment as a power of 2 */
     };
+    
+    printf("Hi\n");
+    //NSLog(@"PXRT: Hi");
     '''
-    command_script_init = 'struct mach_header* mh = (struct mach_header*)_dyld_get_image_header({});'.format(machoIdx) 
+    
+    utils.ILOG("INNER1 {}\n".format(machoIdx))
+        
+    command_script_init = 'struct mach_header* mh = (struct mach_header*)_dyld_get_image_header({});'.format(machoIdx)
     command_script_init += 'const char *path = "{}";'.format(machoPath)
     command_script_init += 'uint64_t main_addr = (uint64_t){};'.format(fix_addr)
+    
+    utils.ILOG("INNER2 {}\n".format(command_script_init))
 
     command_script = command_script_header + command_script_init
 
@@ -315,7 +323,24 @@ def dump_macho_to_file(debugger, machoIdx, machoPath, fix_addr=0):
         strlcpy(rpath, path, sizeof(rpath));
     }
     /* extract basename */
-    tmp = (char*)strrchr(rpath, '/');
+    //tmp = (char*)strrchr(rpath, '/');
+    
+    
+    //strrchr implementation
+    const char *s = rpath;
+    printf("extract basename %s\n", s);
+    int c = '/';
+    int s_len;
+    s_len = strlen(s);
+    for (int i = s_len - 1; i > 0; i--) {
+        if ((char) c == s[i]) {
+            tmp = (char*) &s[i];
+            break;
+        }
+    }
+    
+    printf("Found Basepath %s\n", tmp);
+    
     //printf("\n\n");
     if (tmp == NULL) {
         printf("[-] Unexpected error with filename.\n");
@@ -405,7 +430,19 @@ def dump_macho_to_file(debugger, machoIdx, machoPath, fix_addr=0):
                     
                     /* create new name */
                     strlcpy(npath, "/private/var/mobile/Applications/", sizeof(npath));
-                    tmp = (char*)strchr(rpath+33, '/');
+                    
+                    //strchr implementation
+                    const char *s = rpath+33;
+                    int c = '/';
+                    int s_len;
+                    s_len = strlen(s);
+                    for (int i = 0; i < s_len; i++) {
+                        if ((char) c == s[i]) {
+                            tmp = (char*) &s[i];
+                            break;
+                        }
+                    }
+                    
                     if (tmp == NULL) {
                         printf("[-] Unexpected error with filename.\n");
                         return;
@@ -535,28 +572,36 @@ def dump_macho_to_file(debugger, machoIdx, machoPath, fix_addr=0):
     retStr
     '''
     ret = utils.exe_script(debugger, command_script)
+    
+    utils.ILOG("INNER3 {}\n".format(ret))
 
     return ret
 
 def dumpdecrypted(debugger,modulePath=None, moduleIdx=None):
     # must delete all breakpoints.
-    utils.ILOG("delete all breakpoints")
+    utils.ILOG("delete all breakpoints ok")
     utils.exe_cmd(debugger, "br de -f")
     main_image = utils.get_app_exe_path()
     images = utils.get_all_image_of_app()
     utils.ILOG("start to dump...\n")
     if modulePath and moduleIdx:
+        utils.ILOG("Module {}...\n".format(moduleIdx))
+        utils.ILOG("hm\n")
         print(dump_macho_to_file(debugger, moduleIdx, modulePath))
     else:
         for image in images:
+            utils.ILOG("Image {}\n".format(image["idx"]))
+                            
             if main_image == image["name"]:
+                utils.ILOG("hm\n")
                 entryAddrStr = get_macho_entry_offset(debugger)
                 entryAddr_int = int(entryAddrStr.strip()[1:-1], 16)
                 utils.SLOG("fix main addr:" + hex(entryAddr_int))
                 print(dump_macho_to_file(debugger, image["idx"], image["name"], entryAddr_int))
                 continue
+                
             print(dump_macho_to_file(debugger, image["idx"], image["name"]))
-    return '[*] Developed By xia0@2019'
+    return '[*] Developed By hh xia0@2019'
 
 def generate_option_parser():
     usage = "usage: dumpdecrypted [options] args"
